@@ -533,6 +533,7 @@ static void add_file(struct vlc_source *c, media_file_array_t *new_files,
 	struct dstr new_path = {0};
 	libvlc_media_t *new_media;
 	bool is_url = path && strstr(path, "://") != NULL;
+	bool is_screen = path && (strstr(path, "screen://") != NULL || strstr(path, "window://") != NULL);
 
 	dstr_copy(&new_path, path);
 #ifdef _WIN32
@@ -569,6 +570,14 @@ static void add_file(struct vlc_source *c, media_file_array_t *new_files,
 		}
 		libvlc_media_add_option_(new_media, sub_option.array);
 		dstr_free(&sub_option);
+
+		struct dstr fps_option = {0};
+		if (is_screen) {
+			dstr_catf(&fps_option, ":screen-fps=%d",
+				  30);  // Temporarily hard-coded
+		}
+		libvlc_media_add_option_(new_media, fps_option.array);
+		dstr_free(&fps_option);
 
 		data.path = new_path.array;
 		data.media = new_media;
