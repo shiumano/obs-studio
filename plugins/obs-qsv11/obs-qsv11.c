@@ -99,6 +99,8 @@ struct obs_qsv {
 	size_t sei_size;
 
 	os_performance_token_t *performance_token;
+
+	uint32_t roi_increment;
 };
 
 /* ------------------------------------------------------------------------- */
@@ -185,7 +187,6 @@ static void obs_qsv_defaults(obs_data_t *settings, int ver,
 	obs_data_set_default_int(settings, "keyint_sec", 0);
 	obs_data_set_default_string(settings, "latency", "normal");
 	obs_data_set_default_int(settings, "bframes", 3);
-	obs_data_set_default_bool(settings, "enhancements", true);
 	obs_data_set_default_bool(settings, "repeat_headers", false);
 }
 
@@ -238,8 +239,6 @@ static inline void add_translated_strings(obs_property_t *list,
 #define TEXT_ICQ_QUALITY obs_module_text("ICQQuality")
 #define TEXT_KEYINT_SEC obs_module_text("KeyframeIntervalSec")
 #define TEXT_BFRAMES obs_module_text("BFrames")
-#define TEXT_PERCEPTUAL_ENHANCEMENTS \
-	obs_module_text("SubjectiveVideoEnhancements")
 
 static inline bool is_skl_or_greater_platform()
 {
@@ -314,31 +313,6 @@ static bool update_ratecontrol(obs_data_t *settings)
 	return true;
 }
 
-static bool update_enhancements(obs_data_t *settings)
-{
-	bool update = false;
-	bool mbbrc = true;
-	if (obs_data_item_byname(settings, "mbbrc") != NULL) {
-		mbbrc = (bool)obs_data_get_bool(settings, "mbbrc");
-		obs_data_erase(settings, "mbbrc");
-		update = true;
-	}
-
-	bool cqm = false;
-	if (obs_data_item_byname(settings, "CQM") != NULL) {
-		cqm = (bool)obs_data_get_bool(settings, "CQM");
-		obs_data_erase(settings, "CQM");
-		update = true;
-	}
-
-	if (update) {
-		bool enabled = (mbbrc && cqm);
-		obs_data_set_bool(settings, "enhancements", enabled);
-	}
-
-	return true;
-}
-
 static void update_targetusage(obs_data_t *settings)
 {
 	const char *target_usage =
@@ -396,13 +370,7 @@ static bool rate_control_modified(obs_properties_t *ppts, obs_property_t *p,
 	p = obs_properties_get(ppts, "icq_quality");
 	obs_property_set_visible(p, bVisible);
 
-	bVisible = astrcmpi(rate_control, "CBR") == 0 ||
-		   astrcmpi(rate_control, "VBR") == 0;
-	p = obs_properties_get(ppts, "enhancements");
-	obs_property_set_visible(p, bVisible);
-
 	update_latency(settings);
-	update_enhancements(settings);
 	update_targetusage(settings);
 	update_ratecontrol(settings);
 
@@ -503,9 +471,6 @@ static obs_properties_t *obs_qsv_props(enum qsv_codec codec, void *unused,
 
 	obs_properties_add_int(props, "bframes", TEXT_BFRAMES, 0, 3, 1);
 
-	if (is_skl_or_greater_platform())
-		obs_properties_add_bool(props, "enhancements",
-					TEXT_PERCEPTUAL_ENHANCEMENTS);
 	return props;
 }
 
@@ -538,7 +503,6 @@ static void update_params(struct obs_qsv *obsqsv, obs_data_t *settings)
 	video_t *video = obs_encoder_video(obsqsv->encoder);
 	const struct video_output_info *voi = video_output_get_info(video);
 	update_latency(settings);
-	update_enhancements(settings);
 	update_targetusage(settings);
 
 	const char *target_usage =
@@ -558,7 +522,6 @@ static void update_params(struct obs_qsv *obsqsv, obs_data_t *settings)
 	int keyint_sec = (int)obs_data_get_int(settings, "keyint_sec");
 	bool cbr_override = obs_data_get_bool(settings, "cbr");
 	int bFrames = (int)obs_data_get_int(settings, "bframes");
-	bool enhancements = obs_data_get_bool(settings, "enhancements");
 	bool repeat_headers = obs_data_get_bool(settings, "repeat_headers");
 	const char *codec = "";
 
@@ -742,7 +705,6 @@ static void update_params(struct obs_qsv *obsqsv, obs_data_t *settings)
 	obsqsv->params.nbFrames = (mfxU16)bFrames;
 	obsqsv->params.nKeyIntSec = (mfxU16)keyint_sec;
 	obsqsv->params.nICQQuality = (mfxU16)icq_quality;
-	obsqsv->params.bCQM = enhancements;
 	obsqsv->params.bRepeatHeaders = repeat_headers;
 
 	info("settings:\n"
@@ -780,14 +742,12 @@ static void update_params(struct obs_qsv *obsqsv, obs_data_t *settings)
 	     "\tkeyint:         %d\n"
 	     "\tlatency:        %s\n"
 	     "\tb-frames:       %d\n"
-	     "\tenhancements:   %s\n"
 	     "\tfps_num:        %d\n"
 	     "\tfps_den:        %d\n"
 	     "\twidth:          %d\n"
 	     "\theight:         %d",
-	     target_usage, profile, keyint_sec, latency, bFrames,
-	     enhancements ? "on" : "off", voi->fps_num, voi->fps_den, width,
-	     height);
+	     target_usage, profile, keyint_sec, latency, bFrames, voi->fps_num,
+	     voi->fps_den, width, height);
 
 	info("debug info:");
 }
@@ -864,7 +824,7 @@ static bool obs_qsv_update(void *data, obs_data_t *settings)
 }
 
 static void *obs_qsv_create(enum qsv_codec codec, obs_data_t *settings,
-			    obs_encoder_t *encoder)
+			    obs_encoder_t *encoder, bool useTexAlloc)
 {
 	struct obs_qsv *obsqsv = bzalloc(sizeof(struct obs_qsv));
 	obsqsv->encoder = encoder;
@@ -909,7 +869,8 @@ static void *obs_qsv_create(enum qsv_codec codec, obs_data_t *settings,
 
 	if (update_settings(obsqsv, settings)) {
 		pthread_mutex_lock(&g_QsvLock);
-		obsqsv->context = qsv_encoder_open(&obsqsv->params, codec);
+		obsqsv->context =
+			qsv_encoder_open(&obsqsv->params, codec, useTexAlloc);
 		pthread_mutex_unlock(&g_QsvLock);
 
 		if (obsqsv->context == NULL)
@@ -962,17 +923,17 @@ static void *obs_qsv_create(enum qsv_codec codec, obs_data_t *settings,
 
 static void *obs_qsv_create_h264(obs_data_t *settings, obs_encoder_t *encoder)
 {
-	return obs_qsv_create(QSV_CODEC_AVC, settings, encoder);
+	return obs_qsv_create(QSV_CODEC_AVC, settings, encoder, false);
 }
 
 static void *obs_qsv_create_av1(obs_data_t *settings, obs_encoder_t *encoder)
 {
-	return obs_qsv_create(QSV_CODEC_AV1, settings, encoder);
+	return obs_qsv_create(QSV_CODEC_AV1, settings, encoder, false);
 }
 
 static void *obs_qsv_create_hevc(obs_data_t *settings, obs_encoder_t *encoder)
 {
-	return obs_qsv_create(QSV_CODEC_HEVC, settings, encoder);
+	return obs_qsv_create(QSV_CODEC_HEVC, settings, encoder, false);
 }
 
 static void *obs_qsv_create_tex(enum qsv_codec codec, obs_data_t *settings,
@@ -1019,7 +980,7 @@ static void *obs_qsv_create_tex(enum qsv_codec codec, obs_data_t *settings,
 	}
 
 	blog(LOG_INFO, ">>> new qsv encoder");
-	return obs_qsv_create(codec, settings, encoder);
+	return obs_qsv_create(codec, settings, encoder, true);
 }
 
 static void *obs_qsv_create_tex_h264(obs_data_t *settings,
@@ -1091,7 +1052,7 @@ static inline void cap_resolution(struct obs_qsv *obsqsv,
 	uint32_t width = obs_encoder_get_width(obsqsv->encoder);
 	uint32_t height = obs_encoder_get_height(obsqsv->encoder);
 
-	if (qsv_encoder_is_dgpu(obsqsv->context))
+	if (adapters[adapter_index].is_dgpu == true)
 		qsv_platform = QSV_CPU_PLATFORM_UNKNOWN;
 
 	info->height = height;
@@ -1288,8 +1249,6 @@ static void parse_packet_av1(struct obs_qsv *obsqsv,
 
 	packet->priority = priority;
 
-	bool pFrame = pBS->FrameType & MFX_FRAMETYPE_P;
-
 	packet->dts = ts_mfx_to_obs(pBS->DecodeTimeStamp, voi);
 
 #if 0
@@ -1311,8 +1270,6 @@ static void parse_packet_hevc(struct obs_qsv *obsqsv,
 			      const struct video_output_info *voi,
 			      bool *received_packet)
 {
-	bool is_vcl_packet = false;
-
 	if (pBS == NULL || pBS->DataLength == 0) {
 		*received_packet = false;
 		return;
@@ -1377,6 +1334,37 @@ static void parse_packet_hevc(struct obs_qsv *obsqsv,
 	g_bFirst = false;
 }
 
+static void roi_cb(void *param, struct obs_encoder_roi *roi)
+{
+	struct darray *da = param;
+	darray_push_back(sizeof(struct obs_encoder_roi), da, roi);
+}
+
+static void obs_qsv_setup_rois(struct obs_qsv *obsqsv)
+{
+	const uint32_t increment =
+		obs_encoder_get_roi_increment(obsqsv->encoder);
+	if (obsqsv->roi_increment == increment)
+		return;
+
+	qsv_encoder_clear_roi(obsqsv->context);
+	/* Because we pass-through the ROIs more or less directly we need to
+	 * pass them in reverse order, so make a temporary copy and then use
+	 * that instead. */
+	DARRAY(struct obs_encoder_roi) rois;
+	da_init(rois);
+
+	obs_encoder_enum_roi(obsqsv->encoder, roi_cb, &rois);
+
+	size_t idx = rois.num;
+	while (idx)
+		qsv_encoder_add_roi(obsqsv->context, &rois.array[--idx]);
+
+	da_free(rois);
+
+	obsqsv->roi_increment = increment;
+}
+
 static bool obs_qsv_encode(void *data, struct encoder_frame *frame,
 			   struct encoder_packet *packet, bool *received_packet)
 {
@@ -1395,6 +1383,9 @@ static bool obs_qsv_encode(void *data, struct encoder_frame *frame,
 	int ret;
 
 	mfxU64 qsvPTS = ts_obs_to_mfx(frame->pts, voi);
+
+	if (obs_encoder_has_roi(obsqsv->encoder))
+		obs_qsv_setup_rois(obsqsv);
 
 	// FIXME: remove null check from the top of this function
 	// if we actually do expect null frames to complete output.
@@ -1425,14 +1416,19 @@ static bool obs_qsv_encode(void *data, struct encoder_frame *frame,
 	return true;
 }
 
-static bool obs_qsv_encode_tex(void *data, uint32_t handle, int64_t pts,
-			       uint64_t lock_key, uint64_t *next_key,
+static bool obs_qsv_encode_tex(void *data, struct encoder_texture *tex,
+			       int64_t pts, uint64_t lock_key,
+			       uint64_t *next_key,
 			       struct encoder_packet *packet,
 			       bool *received_packet)
 {
 	struct obs_qsv *obsqsv = data;
 
-	if (handle == GS_INVALID_HANDLE) {
+#ifdef _WIN32
+	if (!tex || tex->handle == GS_INVALID_HANDLE) {
+#else
+	if (!tex || !tex->tex[0] || !tex->tex[1]) {
+#endif
 		warn("Encode failed: bad texture handle");
 		*next_key = lock_key;
 		return false;
@@ -1452,8 +1448,11 @@ static bool obs_qsv_encode_tex(void *data, uint32_t handle, int64_t pts,
 
 	mfxU64 qsvPTS = ts_obs_to_mfx(pts, voi);
 
-	ret = qsv_encoder_encode_tex(obsqsv->context, qsvPTS, handle, lock_key,
-				     next_key, &pBS);
+	if (obs_encoder_has_roi(obsqsv->encoder))
+		obs_qsv_setup_rois(obsqsv);
+
+	ret = qsv_encoder_encode_tex(obsqsv->context, qsvPTS, (void *)tex,
+				     lock_key, next_key, &pBS);
 
 	if (ret < 0) {
 		warn("encode failed");
@@ -1482,7 +1481,7 @@ struct obs_encoder_info obs_qsv_encoder_tex = {
 	.destroy = obs_qsv_destroy,
 	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_PASS_TEXTURE |
 		OBS_ENCODER_CAP_DEPRECATED,
-	.encode_texture = obs_qsv_encode_tex,
+	.encode_texture2 = obs_qsv_encode_tex,
 	.update = obs_qsv_update,
 	.get_properties = obs_qsv_props_h264,
 	.get_defaults = obs_qsv_defaults_h264_v1,
@@ -1516,8 +1515,9 @@ struct obs_encoder_info obs_qsv_encoder_tex_v2 = {
 	.get_name = obs_qsv_getname,
 	.create = obs_qsv_create_tex_h264_v2,
 	.destroy = obs_qsv_destroy,
-	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_PASS_TEXTURE,
-	.encode_texture = obs_qsv_encode_tex,
+	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_PASS_TEXTURE |
+		OBS_ENCODER_CAP_ROI,
+	.encode_texture2 = obs_qsv_encode_tex,
 	.update = obs_qsv_update,
 	.get_properties = obs_qsv_props_h264_v2,
 	.get_defaults = obs_qsv_defaults_h264_v2,
@@ -1540,7 +1540,8 @@ struct obs_encoder_info obs_qsv_encoder_v2 = {
 	.get_extra_data = obs_qsv_extra_data,
 	.get_sei_data = obs_qsv_sei,
 	.get_video_info = obs_qsv_video_info,
-	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_INTERNAL,
+	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_INTERNAL |
+		OBS_ENCODER_CAP_ROI,
 };
 
 struct obs_encoder_info obs_qsv_av1_encoder_tex = {
@@ -1550,8 +1551,9 @@ struct obs_encoder_info obs_qsv_av1_encoder_tex = {
 	.get_name = obs_qsv_getname_av1,
 	.create = obs_qsv_create_tex_av1,
 	.destroy = obs_qsv_destroy,
-	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_PASS_TEXTURE,
-	.encode_texture = obs_qsv_encode_tex,
+	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_PASS_TEXTURE |
+		OBS_ENCODER_CAP_ROI,
+	.encode_texture2 = obs_qsv_encode_tex,
 	.update = obs_qsv_update,
 	.get_properties = obs_qsv_props_av1,
 	.get_defaults = obs_qsv_defaults_av1,
@@ -1572,7 +1574,8 @@ struct obs_encoder_info obs_qsv_av1_encoder = {
 	.get_defaults = obs_qsv_defaults_av1,
 	.get_extra_data = obs_qsv_extra_data,
 	.get_video_info = obs_qsv_video_plus_hdr_info,
-	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_INTERNAL,
+	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_INTERNAL |
+		OBS_ENCODER_CAP_ROI,
 };
 
 struct obs_encoder_info obs_qsv_hevc_encoder_tex = {
@@ -1582,8 +1585,9 @@ struct obs_encoder_info obs_qsv_hevc_encoder_tex = {
 	.get_name = obs_qsv_getname_hevc,
 	.create = obs_qsv_create_tex_hevc,
 	.destroy = obs_qsv_destroy,
-	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_PASS_TEXTURE,
-	.encode_texture = obs_qsv_encode_tex,
+	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_PASS_TEXTURE |
+		OBS_ENCODER_CAP_ROI,
+	.encode_texture2 = obs_qsv_encode_tex,
 	.update = obs_qsv_update,
 	.get_properties = obs_qsv_props_hevc,
 	.get_defaults = obs_qsv_defaults_hevc,
@@ -1604,5 +1608,6 @@ struct obs_encoder_info obs_qsv_hevc_encoder = {
 	.get_defaults = obs_qsv_defaults_hevc,
 	.get_extra_data = obs_qsv_extra_data,
 	.get_video_info = obs_qsv_video_plus_hdr_info,
-	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_INTERNAL,
+	.caps = OBS_ENCODER_CAP_DYN_BITRATE | OBS_ENCODER_CAP_INTERNAL |
+		OBS_ENCODER_CAP_ROI,
 };

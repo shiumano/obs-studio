@@ -162,6 +162,7 @@ struct obs_transform_info {
 	enum obs_bounds_type bounds_type;
 	uint32_t bounds_alignment;
 	struct vec2 bounds;
+	bool crop_to_bounds;
 };
 
 /**
@@ -1865,6 +1866,7 @@ EXPORT void obs_sceneitem_set_bounds_type(obs_sceneitem_t *item,
 					  enum obs_bounds_type type);
 EXPORT void obs_sceneitem_set_bounds_alignment(obs_sceneitem_t *item,
 					       uint32_t alignment);
+EXPORT void obs_sceneitem_set_bounds_crop(obs_sceneitem_t *item, bool crop);
 EXPORT void obs_sceneitem_set_bounds(obs_sceneitem_t *item,
 				     const struct vec2 *bounds);
 
@@ -1880,13 +1882,19 @@ EXPORT uint32_t obs_sceneitem_get_alignment(const obs_sceneitem_t *item);
 EXPORT enum obs_bounds_type
 obs_sceneitem_get_bounds_type(const obs_sceneitem_t *item);
 EXPORT uint32_t obs_sceneitem_get_bounds_alignment(const obs_sceneitem_t *item);
+EXPORT bool obs_sceneitem_get_bounds_crop(const obs_sceneitem_t *item);
 EXPORT void obs_sceneitem_get_bounds(const obs_sceneitem_t *item,
 				     struct vec2 *bounds);
-
-EXPORT void obs_sceneitem_get_info(const obs_sceneitem_t *item,
-				   struct obs_transform_info *info);
-EXPORT void obs_sceneitem_set_info(obs_sceneitem_t *item,
-				   const struct obs_transform_info *info);
+OBS_DEPRECATED EXPORT void
+obs_sceneitem_get_info(const obs_sceneitem_t *item,
+		       struct obs_transform_info *info);
+OBS_DEPRECATED EXPORT void
+obs_sceneitem_set_info(obs_sceneitem_t *item,
+		       const struct obs_transform_info *info);
+EXPORT void obs_sceneitem_get_info2(const obs_sceneitem_t *item,
+				    struct obs_transform_info *info);
+EXPORT void obs_sceneitem_set_info2(obs_sceneitem_t *item,
+				    const struct obs_transform_info *info);
 
 EXPORT void obs_sceneitem_get_draw_transform(const obs_sceneitem_t *item,
 					     struct matrix4 *transform);
@@ -2454,6 +2462,27 @@ EXPORT void obs_encoder_set_gpu_scale_type(obs_encoder_t *encoder,
 EXPORT bool obs_encoder_set_frame_rate_divisor(obs_encoder_t *encoder,
 					       uint32_t divisor);
 
+/**
+ * Adds region of interest (ROI) for an encoder. This allows prioritizing
+ * quality of regions of the frame.
+ * If regions overlap, regions added earlier take precedence.
+ *
+ * Returns false if the encoder does not support ROI or region is invalid.
+ */
+EXPORT bool obs_encoder_add_roi(obs_encoder_t *encoder,
+				const struct obs_encoder_roi *roi);
+/** For video encoders, returns true if any ROIs were set */
+EXPORT bool obs_encoder_has_roi(const obs_encoder_t *encoder);
+/** Clear all regions */
+EXPORT void obs_encoder_clear_roi(obs_encoder_t *encoder);
+/** Enumerate regions with callback (reverse order of addition) */
+EXPORT void obs_encoder_enum_roi(obs_encoder_t *encoder,
+				 void (*enum_proc)(void *,
+						   struct obs_encoder_roi *),
+				 void *param);
+/** Get ROI increment, encoders must rebuild their ROI map if it has changed */
+EXPORT uint32_t obs_encoder_get_roi_increment(const obs_encoder_t *encoder);
+
 /** For video encoders, returns true if pre-encode scaling is enabled */
 EXPORT bool obs_encoder_scaling_enabled(const obs_encoder_t *encoder);
 
@@ -2570,6 +2599,11 @@ EXPORT void obs_encoder_set_last_error(obs_encoder_t *encoder,
 				       const char *message);
 
 EXPORT uint64_t obs_encoder_get_pause_offset(const obs_encoder_t *encoder);
+
+EXPORT bool obs_encoder_group_keyframe_aligned_encoders(
+	obs_encoder_t *encoder, obs_encoder_t *encoder_to_be_grouped);
+EXPORT bool obs_encoder_group_remove_keyframe_aligned_encoder(
+	obs_encoder_t *encoder, obs_encoder_t *encoder_to_be_ungrouped);
 
 /* ------------------------------------------------------------------------- */
 /* Stream Services */

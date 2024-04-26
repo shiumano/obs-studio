@@ -2,28 +2,40 @@ cmake_minimum_required(VERSION 3.22...3.25)
 
 legacy_check()
 
-# cmake-format: off
-add_library(libobs-version STATIC EXCLUDE_FROM_ALL)
-add_library(OBS::libobs-version ALIAS libobs-version)
-# cmake-format: on
-configure_file(obsversion.c.in obsversion.c @ONLY)
-target_sources(libobs-version PRIVATE obsversion.c obsversion.h)
-set_property(TARGET libobs-version PROPERTY FOLDER core)
-
-add_library(libobs SHARED)
-add_library(OBS::libobs ALIAS libobs)
+include(cmake/obs-version.cmake)
 
 find_package(Threads REQUIRED)
-find_package(FFmpeg REQUIRED avformat avutil swscale swresample OPTIONAL_COMPONENTS avcodec)
+
+# cmake-format: off
+if(OS_WINDOWS OR OS_MACOS)
+  set(ffmpeg_version 6)
+else()
+  set(ffmpeg_version 4.4)
+endif()
+
+find_package(
+  FFmpeg ${ffmpeg_version}
+  REQUIRED avformat
+           avutil
+           swscale
+           swresample
+  OPTIONAL_COMPONENTS avcodec)
+# cmake-format: on
+
 find_package(ZLIB REQUIRED)
+find_package(Uthash REQUIRED)
 
 if(ENABLE_UI)
-  find_qt(COMPONENTS Core)
+  find_package(Qt6 REQUIRED Core)
 endif()
 
 find_package(jansson REQUIRED)
-add_subdirectory("${CMAKE_SOURCE_DIR}/deps/libcaption" "${CMAKE_BINARY_DIR}/deps/libcaption")
-add_subdirectory("${CMAKE_SOURCE_DIR}/deps/uthash" "${CMAKE_BINARY_DIR}/deps/uthash")
+if(NOT TARGET OBS::caption)
+  add_subdirectory("${CMAKE_SOURCE_DIR}/deps/libcaption" "${CMAKE_BINARY_DIR}/deps/libcaption")
+endif()
+
+add_library(libobs SHARED)
+add_library(OBS::libobs ALIAS libobs)
 
 target_sources(
   libobs
@@ -99,12 +111,14 @@ target_sources(
           util/crc32.h
           util/curl/curl-helper.h
           util/darray.h
+          util/deque.h
           util/dstr.c
           util/dstr.h
           util/file-serializer.c
           util/file-serializer.h
           util/lexer.c
           util/lexer.h
+          util/pipe.c
           util/pipe.h
           util/platform.c
           util/platform.h
@@ -224,6 +238,7 @@ target_sources(
           graphics/vec4.h)
 
 target_compile_features(libobs PUBLIC cxx_std_17)
+
 target_compile_definitions(
   libobs
   PRIVATE IS_LIBOBS
@@ -233,7 +248,6 @@ target_compile_definitions(
 target_link_libraries(
   libobs
   PRIVATE OBS::caption
-          OBS::uthash
           OBS::libobs-version
           FFmpeg::avcodec
           FFmpeg::avformat
@@ -241,6 +255,7 @@ target_link_libraries(
           FFmpeg::swscale
           FFmpeg::swresample
           jansson::jansson
+          Uthash::Uthash
           ZLIB::ZLIB
   PUBLIC Threads::Threads)
 
@@ -250,13 +265,15 @@ elseif(OS_MACOS)
   include(cmake/os-macos.cmake)
 elseif(OS_LINUX)
   include(cmake/os-linux.cmake)
-elseif(OS_FREEBSD)
+elseif(OS_FREEBSD OR OS_OPENBSD)
   include(cmake/os-freebsd.cmake)
 endif()
 
 configure_file(obsconfig.h.in "${CMAKE_BINARY_DIR}/config/obsconfig.h" @ONLY)
+
 target_include_directories(libobs PUBLIC "$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/config>"
                                          "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>")
+
 target_compile_definitions(libobs PUBLIC HAVE_OBSCONFIG_H)
 
 set(public_headers
@@ -311,11 +328,8 @@ set(public_headers
     obs-properties.h
     obs-service.h
     obs-source.h
-    obs-ui.h
     obs.h
     obs.hpp
-    util/AlignedNew.hpp
-    util/apple/cfstring-utils.h
     util/array-serializer.h
     util/base.h
     util/bitstream.h
@@ -327,6 +341,7 @@ set(public_headers
     util/config-file.h
     util/crc32.h
     util/darray.h
+    util/deque.h
     util/dstr.h
     util/dstr.hpp
     util/file-serializer.h
@@ -354,12 +369,17 @@ set(public_headers
     util/task.h
     util/text-lookup.h
     util/threading-posix.h
-    util/threading-windows.h
     util/threading.h
     util/uthash.h
     util/util.hpp
     util/util_uint128.h
-    util/util_uint64.h
+    util/util_uint64.h)
+
+if(OS_WINDOWS)
+  list(
+    APPEND
+    public_headers
+    util/threading-windows.h
     util/windows/ComPtr.hpp
     util/windows/CoTaskMemPtr.hpp
     util/windows/device-enum.h
@@ -368,6 +388,9 @@ set(public_headers
     util/windows/win-version.h
     util/windows/window-helpers.h
     util/windows/WinHandle.hpp)
+elseif(OS_MACOS)
+  list(APPEND public_headers util/apple/cfstring-utils.h)
+endif()
 
 if(ENABLE_HEVC)
   list(APPEND public_headers obs-hevc.h)

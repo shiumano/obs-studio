@@ -86,8 +86,7 @@ static bool init_screen_stream(struct screen_capture *sc)
     sc->stream_properties = [[SCStreamConfiguration alloc] init];
     os_sem_wait(sc->shareable_content_available);
 
-    SCDisplay * (^get_target_display)(void) = ^SCDisplay *
-    {
+    SCDisplayRef (^get_target_display)(void) = ^SCDisplayRef {
         for (SCDisplay *display in sc->shareable_content.displays) {
             if (display.displayID == sc->display) {
                 return display;
@@ -107,7 +106,14 @@ static bool init_screen_stream(struct screen_capture *sc)
     switch (sc->capture_type) {
         case ScreenCaptureDisplayStream: {
             SCDisplay *target_display = get_target_display();
-
+            if (target_display == nil) {
+                MACCAP_ERR("init_screen_stream: Invalid target display ID:  %u\n", sc->display);
+                os_sem_post(sc->shareable_content_available);
+                sc->disp = NULL;
+                os_event_init(&sc->disp_finished, OS_EVENT_TYPE_MANUAL);
+                os_event_init(&sc->stream_start_completed, OS_EVENT_TYPE_MANUAL);
+                return true;
+            }
             if (sc->hide_obs) {
                 SCRunningApplication *obsApp = nil;
                 NSString *mainBundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
@@ -143,6 +149,7 @@ static bool init_screen_stream(struct screen_capture *sc)
                 }
             }
             if (target_window == nil) {
+                MACCAP_ERR("init_screen_stream: Invalid target window ID:  %u\n", sc->window);
                 os_sem_post(sc->shareable_content_available);
                 sc->disp = NULL;
                 os_event_init(&sc->disp_finished, OS_EVENT_TYPE_MANUAL);
@@ -153,10 +160,22 @@ static bool init_screen_stream(struct screen_capture *sc)
 
                 [sc->stream_properties setWidth:(size_t) target_window.frame.size.width];
                 [sc->stream_properties setHeight:(size_t) target_window.frame.size.height];
+
+                if (@available(macOS 14.2, *)) {
+                    [sc->stream_properties setIncludeChildWindows:YES];
+                }
             }
         } break;
         case ScreenCaptureApplicationStream: {
             SCDisplay *target_display = get_target_display();
+            if (target_display == nil) {
+                MACCAP_ERR("init_screen_stream: Invalid target display ID:  %u\n", sc->display);
+                os_sem_post(sc->shareable_content_available);
+                sc->disp = NULL;
+                os_event_init(&sc->disp_finished, OS_EVENT_TYPE_MANUAL);
+                os_event_init(&sc->stream_start_completed, OS_EVENT_TYPE_MANUAL);
+                return true;
+            }
             SCRunningApplication *target_application = nil;
             for (SCRunningApplication *application in sc->shareable_content.applications) {
                 if ([application.bundleIdentifier isEqualToString:sc->application_id]) {
@@ -169,6 +188,10 @@ static bool init_screen_stream(struct screen_capture *sc)
             content_filter = [[SCContentFilter alloc] initWithDisplay:target_display
                                                 includingApplications:target_application_array
                                                      exceptingWindows:empty_array];
+            if (@available(macOS 14.2, *)) {
+                content_filter.includeMenuBar = YES;
+            }
+
             [target_application_array release];
             [empty_array release];
 

@@ -346,6 +346,7 @@ void RestrictResetBitrates(initializer_list<QComboBox *> boxes, int maxbitrate);
 #define VIDEO_RES       &OBSBasicSettings::VideoChangedResolution
 #define VIDEO_CHANGED   &OBSBasicSettings::VideoChanged
 #define A11Y_CHANGED    &OBSBasicSettings::A11yChanged
+#define APPEAR_CHANGED  &OBSBasicSettings::AppearanceChanged
 #define ADV_CHANGED     &OBSBasicSettings::AdvancedChanged
 #define ADV_RESTART     &OBSBasicSettings::AdvancedChangedRestart
 /* clang-format on */
@@ -369,7 +370,6 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 
 	/* clang-format off */
 	HookWidget(ui->language,             COMBO_CHANGED,  GENERAL_CHANGED);
-	HookWidget(ui->theme, 		     COMBO_CHANGED,  GENERAL_CHANGED);
 	HookWidget(ui->updateChannelBox,     COMBO_CHANGED,  GENERAL_CHANGED);
 	HookWidget(ui->enableAutoUpdates,    CHECK_CHANGED,  GENERAL_CHANGED);
 	HookWidget(ui->openStatsOnStartup,   CHECK_CHANGED,  GENERAL_CHANGED);
@@ -406,6 +406,8 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	HookWidget(ui->multiviewDrawNames,   CHECK_CHANGED,  GENERAL_CHANGED);
 	HookWidget(ui->multiviewDrawAreas,   CHECK_CHANGED,  GENERAL_CHANGED);
 	HookWidget(ui->multiviewLayout,      COMBO_CHANGED,  GENERAL_CHANGED);
+	HookWidget(ui->theme, 		     COMBO_CHANGED,  APPEAR_CHANGED);
+	HookWidget(ui->themeVariant,	     COMBO_CHANGED,  APPEAR_CHANGED);
 	HookWidget(ui->service,              COMBO_CHANGED,  STREAM1_CHANGED);
 	HookWidget(ui->server,               COMBO_CHANGED,  STREAM1_CHANGED);
 	HookWidget(ui->customServer,         EDIT_CHANGED,   STREAM1_CHANGED);
@@ -442,22 +444,28 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	HookWidget(ui->simpleRBMegsMax,      SCROLL_CHANGED, OUTPUTS_CHANGED);
 	HookWidget(ui->advOutEncoder,        COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutAEncoder,       COMBO_CHANGED,  OUTPUTS_CHANGED);
-	HookWidget(ui->advOutUseRescale,     CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRescale,        CBEDIT_CHANGED, OUTPUTS_CHANGED);
+	HookWidget(ui->advOutRescaleFilter,  COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutTrack1,         CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutTrack2,         CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutTrack3,         CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutTrack4,         CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutTrack5,         CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutTrack6,         CHECK_CHANGED,  OUTPUTS_CHANGED);
+	HookWidget(ui->advOutMultiTrack1,    CHECK_CHANGED,  OUTPUTS_CHANGED);
+	HookWidget(ui->advOutMultiTrack2,    CHECK_CHANGED,  OUTPUTS_CHANGED);
+	HookWidget(ui->advOutMultiTrack3,    CHECK_CHANGED,  OUTPUTS_CHANGED);
+	HookWidget(ui->advOutMultiTrack4,    CHECK_CHANGED,  OUTPUTS_CHANGED);
+	HookWidget(ui->advOutMultiTrack5,    CHECK_CHANGED,  OUTPUTS_CHANGED);
+	HookWidget(ui->advOutMultiTrack6,    CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecType,        COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecPath,        EDIT_CHANGED,   OUTPUTS_CHANGED);
 	HookWidget(ui->advOutNoSpace,        CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecFormat,      COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecEncoder,     COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecAEncoder,    COMBO_CHANGED,  OUTPUTS_CHANGED);
-	HookWidget(ui->advOutRecUseRescale,  CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutRecRescale,     CBEDIT_CHANGED, OUTPUTS_CHANGED);
+	HookWidget(ui->advOutRecRescaleFilter, COMBO_CHANGED, OUTPUTS_CHANGED);
 	HookWidget(ui->advOutMuxCustom,      EDIT_CHANGED,   OUTPUTS_CHANGED);
 	HookWidget(ui->advOutSplitFile,      CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->advOutSplitFileType,  COMBO_CHANGED,  OUTPUTS_CHANGED);
@@ -819,6 +827,35 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	connect(ui->advRBSecMax, &QSpinBox::valueChanged, this,
 		&OBSBasicSettings::AdvReplayBufferChanged);
 
+	// GPU scaling filters
+	auto addScaleFilter = [&](const char *string, int value) -> void {
+		ui->advOutRescaleFilter->addItem(QTStr(string), value);
+		ui->advOutRecRescaleFilter->addItem(QTStr(string), value);
+	};
+
+	addScaleFilter("Basic.Settings.Output.Adv.Rescale.Disabled",
+		       OBS_SCALE_DISABLE);
+	addScaleFilter("Basic.Settings.Video.DownscaleFilter.Bilinear",
+		       OBS_SCALE_BILINEAR);
+	addScaleFilter("Basic.Settings.Video.DownscaleFilter.Area",
+		       OBS_SCALE_AREA);
+	addScaleFilter("Basic.Settings.Video.DownscaleFilter.Bicubic",
+		       OBS_SCALE_BICUBIC);
+	addScaleFilter("Basic.Settings.Video.DownscaleFilter.Lanczos",
+		       OBS_SCALE_LANCZOS);
+
+	auto connectScaleFilter = [&](QComboBox *filter,
+				      QComboBox *res) -> void {
+		connect(filter, &QComboBox::currentIndexChanged, this,
+			[this, res, filter](int) {
+				res->setEnabled(filter->currentData() !=
+						OBS_SCALE_DISABLE);
+			});
+	};
+
+	connectScaleFilter(ui->advOutRescaleFilter, ui->advOutRescale);
+	connectScaleFilter(ui->advOutRecRescaleFilter, ui->advOutRecRescale);
+
 	// Get Bind to IP Addresses
 	obs_properties_t *ppts = obs_get_output_properties("rtmp_output");
 	obs_property_t *p = obs_properties_get(ppts, "bind_ip");
@@ -845,6 +882,7 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	obs_properties_destroy(ppts);
 
 	InitStreamPage();
+	InitAppearancePage();
 	LoadSettings(false);
 
 	ui->advOutTrack1->setAccessibleName(
@@ -1182,10 +1220,10 @@ void OBSBasicSettings::ReloadCodecs(const FFmpegFormat &format)
 
 	for (auto &codec : supportedCodecs) {
 		switch (codec.type) {
-		case AUDIO:
+		case FFmpegCodecType::AUDIO:
 			AddCodec(ui->advOutFFAEncoder, codec);
 			break;
-		case VIDEO:
+		case FFmpegCodecType::VIDEO:
 			AddCodec(ui->advOutFFVEncoder, codec);
 			break;
 		default:
@@ -1229,51 +1267,6 @@ void OBSBasicSettings::LoadLanguageList()
 	}
 
 	ui->language->model()->sort(0);
-}
-
-void OBSBasicSettings::LoadThemeList()
-{
-	/* Save theme if user presses Cancel */
-	savedTheme = string(App()->GetTheme());
-
-	ui->theme->clear();
-	QSet<QString> uniqueSet;
-	string themeDir;
-	char userThemeDir[512];
-	int ret = GetConfigPath(userThemeDir, sizeof(userThemeDir),
-				"obs-studio/themes/");
-	GetDataFilePath("themes/", themeDir);
-
-	/* Check user dir first. */
-	if (ret > 0) {
-		QDirIterator it(QString(userThemeDir), QStringList() << "*.qss",
-				QDir::Files);
-		while (it.hasNext()) {
-			it.next();
-			QString name = it.fileInfo().completeBaseName();
-			ui->theme->addItem(name, name);
-			uniqueSet.insert(name);
-		}
-	}
-
-	/* Check shipped themes. */
-	QDirIterator uIt(QString(themeDir.c_str()), QStringList() << "*.qss",
-			 QDir::Files);
-	while (uIt.hasNext()) {
-		uIt.next();
-		QString name = uIt.fileInfo().completeBaseName();
-		QString value = name;
-
-		if (name == DEFAULT_THEME)
-			name += " " + QTStr("Default");
-
-		if (!uniqueSet.contains(value) && name != "Default")
-			ui->theme->addItem(name, value);
-	}
-
-	int idx = ui->theme->findData(QT_UTF8(App()->GetTheme()));
-	if (idx != -1)
-		ui->theme->setCurrentIndex(idx);
 }
 
 #if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
@@ -1348,7 +1341,6 @@ void OBSBasicSettings::LoadGeneralSettings()
 	loading = true;
 
 	LoadLanguageList();
-	LoadThemeList();
 
 #if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
 	bool enableAutoUpdates = config_get_bool(GetGlobalConfig(), "General",
@@ -2024,14 +2016,19 @@ static inline QString makeFormatToolTip()
 
 void OBSBasicSettings::LoadAdvOutputStreamingSettings()
 {
-	bool rescale = config_get_bool(main->Config(), "AdvOut", "Rescale");
 	const char *rescaleRes =
 		config_get_string(main->Config(), "AdvOut", "RescaleRes");
+	int rescaleFilter =
+		config_get_int(main->Config(), "AdvOut", "RescaleFilter");
 	int trackIndex = config_get_int(main->Config(), "AdvOut", "TrackIndex");
-
-	ui->advOutUseRescale->setChecked(rescale);
-	ui->advOutRescale->setEnabled(rescale);
+	int audioMixes = config_get_int(main->Config(), "AdvOut",
+					"StreamMultiTrackAudioMixes");
+	ui->advOutRescale->setEnabled(rescaleFilter != OBS_SCALE_DISABLE);
 	ui->advOutRescale->setCurrentText(rescaleRes);
+
+	int idx = ui->advOutRescaleFilter->findData(rescaleFilter);
+	if (idx != -1)
+		ui->advOutRescaleFilter->setCurrentIndex(idx);
 
 	QStringList specList = QTStr("FilenameFormatting.completer")
 				       .split(QRegularExpression("\n"));
@@ -2061,6 +2058,17 @@ void OBSBasicSettings::LoadAdvOutputStreamingSettings()
 		ui->advOutTrack6->setChecked(true);
 		break;
 	}
+	ui->advOutMultiTrack1->setChecked(audioMixes & (1 << 0));
+	ui->advOutMultiTrack2->setChecked(audioMixes & (1 << 1));
+	ui->advOutMultiTrack3->setChecked(audioMixes & (1 << 2));
+	ui->advOutMultiTrack4->setChecked(audioMixes & (1 << 3));
+	ui->advOutMultiTrack5->setChecked(audioMixes & (1 << 4));
+	ui->advOutMultiTrack6->setChecked(audioMixes & (1 << 5));
+
+	obs_service_t *service_obj = main->GetService();
+	const char *protocol = nullptr;
+	protocol = obs_service_get_protocol(service_obj);
+	SwapMultiTrack(protocol);
 }
 
 OBSPropertiesView *
@@ -2088,6 +2096,7 @@ OBSBasicSettings::CreateEncoderPropertyView(const char *encoder,
 	view->setFrameShape(QFrame::NoFrame);
 	view->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
 	view->setProperty("changed", QVariant(changed));
+	view->setScrolling(false);
 	QObject::connect(view, &OBSPropertiesView::Changed, this,
 			 &OBSBasicSettings::OutputsChanged);
 
@@ -2137,9 +2146,10 @@ void OBSBasicSettings::LoadAdvOutputRecordingSettings()
 		config_get_string(main->Config(), "AdvOut", "RecFilePath");
 	bool noSpace = config_get_bool(main->Config(), "AdvOut",
 				       "RecFileNameWithoutSpace");
-	bool rescale = config_get_bool(main->Config(), "AdvOut", "RecRescale");
 	const char *rescaleRes =
 		config_get_string(main->Config(), "AdvOut", "RecRescaleRes");
+	int rescaleFilter =
+		config_get_int(main->Config(), "AdvOut", "RecRescaleFilter");
 	const char *muxCustom =
 		config_get_string(main->Config(), "AdvOut", "RecMuxerCustom");
 	int tracks = config_get_int(main->Config(), "AdvOut", "RecTracks");
@@ -2157,11 +2167,13 @@ void OBSBasicSettings::LoadAdvOutputRecordingSettings()
 	ui->advOutRecType->setCurrentIndex(typeIndex);
 	ui->advOutRecPath->setText(path);
 	ui->advOutNoSpace->setChecked(noSpace);
-	ui->advOutRecUseRescale->setChecked(rescale);
 	ui->advOutRecRescale->setCurrentText(rescaleRes);
+	int idx = ui->advOutRecRescaleFilter->findData(rescaleFilter);
+	if (idx != -1)
+		ui->advOutRecRescaleFilter->setCurrentIndex(idx);
 	ui->advOutMuxCustom->setText(muxCustom);
 
-	int idx = ui->advOutRecFormat->findData(format);
+	idx = ui->advOutRecFormat->findData(format);
 	ui->advOutRecFormat->setCurrentIndex(idx);
 
 	ui->advOutRecTrack1->setChecked(tracks & (1 << 0));
@@ -2962,6 +2974,7 @@ LayoutHotkey(OBSBasicSettings *settings, obs_hotkey_id id, obs_hotkey_t *key,
 					 settings, combos->second);
 
 	hw->label = label;
+	hw->setAccessibleName(text);
 	label->widget = hw;
 
 	fun(key, label, hw);
@@ -3273,6 +3286,8 @@ void OBSBasicSettings::LoadSettings(bool changedOnly)
 		LoadVideoSettings();
 	if (!changedOnly || a11yChanged)
 		LoadA11ySettings();
+	if (!changedOnly || appearanceChanged)
+		LoadAppearanceSettings();
 	if (!changedOnly || advancedChanged)
 		LoadAdvancedSettings();
 }
@@ -3286,15 +3301,6 @@ void OBSBasicSettings::SaveGeneralSettings()
 	if (WidgetChanged(ui->language))
 		config_set_string(GetGlobalConfig(), "General", "Language",
 				  language.c_str());
-
-	int themeIndex = ui->theme->currentIndex();
-	QString themeData = ui->theme->itemData(themeIndex).toString();
-
-	if (WidgetChanged(ui->theme)) {
-		savedTheme = themeData.toStdString();
-		config_set_string(GetGlobalConfig(), "General", "CurrentTheme3",
-				  QT_TO_UTF8(themeData));
-	}
 
 #if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
 	if (WidgetChanged(ui->enableAutoUpdates))
@@ -3816,12 +3822,13 @@ void OBSBasicSettings::SaveOutputSettings()
 
 	SaveComboData(ui->advOutEncoder, "AdvOut", "Encoder");
 	SaveComboData(ui->advOutAEncoder, "AdvOut", "AudioEncoder");
-	SaveCheckBox(ui->advOutUseRescale, "AdvOut", "Rescale");
 	SaveCombo(ui->advOutRescale, "AdvOut", "RescaleRes");
+	SaveComboData(ui->advOutRescaleFilter, "AdvOut", "RescaleFilter");
 	SaveTrackIndex(main->Config(), "AdvOut", "TrackIndex", ui->advOutTrack1,
 		       ui->advOutTrack2, ui->advOutTrack3, ui->advOutTrack4,
 		       ui->advOutTrack5, ui->advOutTrack6);
-
+	config_set_int(main->Config(), "AdvOut", "StreamMultiTrackAudioMixes",
+		       AdvOutGetStreamingSelectedAudioTracks());
 	config_set_string(main->Config(), "AdvOut", "RecType",
 			  RecTypeFromIdx(ui->advOutRecType->currentIndex()));
 
@@ -3832,8 +3839,8 @@ void OBSBasicSettings::SaveOutputSettings()
 	SaveComboData(ui->advOutRecFormat, "AdvOut", "RecFormat2");
 	SaveComboData(ui->advOutRecEncoder, "AdvOut", "RecEncoder");
 	SaveComboData(ui->advOutRecAEncoder, "AdvOut", "RecAudioEncoder");
-	SaveCheckBox(ui->advOutRecUseRescale, "AdvOut", "RecRescale");
 	SaveCombo(ui->advOutRecRescale, "AdvOut", "RecRescaleRes");
+	SaveComboData(ui->advOutRecRescaleFilter, "AdvOut", "RecRescaleFilter");
 	SaveEdit(ui->advOutMuxCustom, "AdvOut", "RecMuxerCustom");
 	SaveCheckBox(ui->advOutSplitFile, "AdvOut", "RecSplitFile");
 	config_set_string(
@@ -4085,7 +4092,8 @@ void OBSBasicSettings::SaveSettings()
 		SaveA11ySettings();
 	if (advancedChanged)
 		SaveAdvancedSettings();
-
+	if (appearanceChanged)
+		SaveAppearanceSettings();
 	if (videoChanged || advancedChanged)
 		main->ResetVideo();
 
@@ -4109,6 +4117,8 @@ void OBSBasicSettings::SaveSettings()
 			AddChangedVal(changed, "hotkeys");
 		if (a11yChanged)
 			AddChangedVal(changed, "a11y");
+		if (appearanceChanged)
+			AddChangedVal(changed, "appearance");
 		if (advancedChanged)
 			AddChangedVal(changed, "advanced");
 
@@ -4147,7 +4157,7 @@ bool OBSBasicSettings::QueryChanges()
 		SaveSettings();
 	} else {
 		if (savedTheme != App()->GetTheme())
-			App()->SetTheme(savedTheme);
+			App()->SetTheme(savedTheme->id);
 
 		LoadSettings(true);
 		restart = false;
@@ -4191,6 +4201,8 @@ bool OBSBasicSettings::QueryAllowedToClose()
 		QString format = ui->advOutRecFormat->currentData().toString();
 		if (AdvOutGetSelectedAudioTracks() == 0 && format != "flv")
 			invalidTracks = true;
+		if (AdvOutGetStreamingSelectedAudioTracks() == 0)
+			invalidTracks = true;
 	}
 
 	if (invalidEncoder) {
@@ -4220,17 +4232,24 @@ void OBSBasicSettings::closeEvent(QCloseEvent *event)
 		event->ignore();
 }
 
+void OBSBasicSettings::showEvent(QShowEvent *event)
+{
+	QDialog::showEvent(event);
+
+	/* Reduce the height of the widget area if too tall compared to the screen
+	 * size (e.g., 720p) with potential window decoration (e.g., titlebar). */
+	const int titleBarHeight =
+		QApplication::style()->pixelMetric(QStyle::PM_TitleBarHeight);
+	const int maxHeight =
+		round(screen()->availableGeometry().height() - titleBarHeight);
+	if (size().height() >= maxHeight)
+		resize(size().width(), maxHeight);
+}
+
 void OBSBasicSettings::reject()
 {
 	if (AskIfCanCloseSettings())
 		close();
-}
-
-void OBSBasicSettings::on_theme_activated(int idx)
-{
-	QString currT = ui->theme->itemData(idx).toString();
-
-	App()->SetTheme(currT.toUtf8().constData());
 }
 
 void OBSBasicSettings::on_listWidget_itemSelectionChanged()
@@ -4240,7 +4259,7 @@ void OBSBasicSettings::on_listWidget_itemSelectionChanged()
 	if (loading || row == pageIndex)
 		return;
 
-	if (!hotkeysLoaded && row == 5) {
+	if (!hotkeysLoaded && row == Pages::HOTKEYS) {
 		setCursor(Qt::BusyCursor);
 		/* Look, I know this /feels/ wrong, but the specific issue we're dealing with
 		 * here means that the UI locks up immediately even when using "invokeMethod".
@@ -4297,7 +4316,7 @@ void OBSBasicSettings::on_buttonBox_clicked(QAbstractButton *button)
 	    val == QDialogButtonBox::RejectRole) {
 		if (val == QDialogButtonBox::RejectRole) {
 			if (savedTheme != App()->GetTheme())
-				App()->SetTheme(savedTheme);
+				App()->SetTheme(savedTheme->id);
 		}
 		ClearChanged();
 		close();
@@ -4364,7 +4383,6 @@ void OBSBasicSettings::on_advOutRecEncoder_currentIndexChanged(int idx)
 	}
 
 	if (idx <= 0) {
-		ui->advOutRecUseRescale->setChecked(false);
 		ui->advOutRecUseRescale->setVisible(false);
 		ui->advOutRecRescaleContainer->setVisible(false);
 		ui->advOutRecEncoderProps->setVisible(false);
@@ -4439,7 +4457,8 @@ void OBSBasicSettings::on_advOutFFAEncoder_currentIndexChanged(int idx)
 	if (!itemDataVariant.isNull()) {
 		auto desc = itemDataVariant.value<FFmpegCodec>();
 		SetAdvOutputFFmpegEnablement(
-			AUDIO, desc.id != 0 || desc.name != nullptr, true);
+			FFmpegCodecType::AUDIO,
+			desc.id != 0 || desc.name != nullptr, true);
 	}
 }
 
@@ -4449,7 +4468,8 @@ void OBSBasicSettings::on_advOutFFVEncoder_currentIndexChanged(int idx)
 	if (!itemDataVariant.isNull()) {
 		auto desc = itemDataVariant.value<FFmpegCodec>();
 		SetAdvOutputFFmpegEnablement(
-			VIDEO, desc.id != 0 || desc.name != nullptr, true);
+			FFmpegCodecType::VIDEO,
+			desc.id != 0 || desc.name != nullptr, true);
 	}
 }
 
@@ -4941,6 +4961,15 @@ void OBSBasicSettings::A11yChanged()
 	}
 }
 
+void OBSBasicSettings::AppearanceChanged()
+{
+	if (!loading) {
+		appearanceChanged = true;
+		sender()->setProperty("changed", QVariant(true));
+		EnableApplyButton(true);
+	}
+}
+
 void OBSBasicSettings::AdvancedChanged()
 {
 	if (!loading) {
@@ -5145,10 +5174,7 @@ void OBSBasicSettings::AdvOutRecCheckWarnings()
 			errorMsg.isEmpty() ? "warningLabel" : "errorLabel");
 		advOutRecWarning->setWordWrap(true);
 
-		QFormLayout *formLayout = reinterpret_cast<QFormLayout *>(
-			ui->advOutRecTopContainer->layout());
-
-		formLayout->addRow(nullptr, advOutRecWarning);
+		ui->advOutRecInfoLayout->addWidget(advOutRecWarning);
 	}
 }
 
@@ -6020,6 +6046,11 @@ QIcon OBSBasicSettings::GetGeneralIcon() const
 	return generalIcon;
 }
 
+QIcon OBSBasicSettings::GetAppearanceIcon() const
+{
+	return appearanceIcon;
+}
+
 QIcon OBSBasicSettings::GetStreamIcon() const
 {
 	return streamIcon;
@@ -6057,42 +6088,47 @@ QIcon OBSBasicSettings::GetAdvancedIcon() const
 
 void OBSBasicSettings::SetGeneralIcon(const QIcon &icon)
 {
-	ui->listWidget->item(0)->setIcon(icon);
+	ui->listWidget->item(Pages::GENERAL)->setIcon(icon);
+}
+
+void OBSBasicSettings::SetAppearanceIcon(const QIcon &icon)
+{
+	ui->listWidget->item(Pages::APPEARANCE)->setIcon(icon);
 }
 
 void OBSBasicSettings::SetStreamIcon(const QIcon &icon)
 {
-	ui->listWidget->item(1)->setIcon(icon);
+	ui->listWidget->item(Pages::STREAM)->setIcon(icon);
 }
 
 void OBSBasicSettings::SetOutputIcon(const QIcon &icon)
 {
-	ui->listWidget->item(2)->setIcon(icon);
+	ui->listWidget->item(Pages::OUTPUT)->setIcon(icon);
 }
 
 void OBSBasicSettings::SetAudioIcon(const QIcon &icon)
 {
-	ui->listWidget->item(3)->setIcon(icon);
+	ui->listWidget->item(Pages::AUDIO)->setIcon(icon);
 }
 
 void OBSBasicSettings::SetVideoIcon(const QIcon &icon)
 {
-	ui->listWidget->item(4)->setIcon(icon);
+	ui->listWidget->item(Pages::VIDEO)->setIcon(icon);
 }
 
 void OBSBasicSettings::SetHotkeysIcon(const QIcon &icon)
 {
-	ui->listWidget->item(5)->setIcon(icon);
+	ui->listWidget->item(Pages::HOTKEYS)->setIcon(icon);
 }
 
 void OBSBasicSettings::SetAccessibilityIcon(const QIcon &icon)
 {
-	ui->listWidget->item(6)->setIcon(icon);
+	ui->listWidget->item(Pages::ACCESSIBILITY)->setIcon(icon);
 }
 
 void OBSBasicSettings::SetAdvancedIcon(const QIcon &icon)
 {
-	ui->listWidget->item(7)->setIcon(icon);
+	ui->listWidget->item(Pages::ADVANCED)->setIcon(icon);
 }
 
 int OBSBasicSettings::CurrentFLVTrack()
@@ -6132,6 +6168,17 @@ int OBSBasicSettings::AdvOutGetSelectedAudioTracks()
 		     (ui->advOutRecTrack4->isChecked() ? (1 << 3) : 0) |
 		     (ui->advOutRecTrack5->isChecked() ? (1 << 4) : 0) |
 		     (ui->advOutRecTrack6->isChecked() ? (1 << 5) : 0);
+	return tracks;
+}
+
+int OBSBasicSettings::AdvOutGetStreamingSelectedAudioTracks()
+{
+	int tracks = (ui->advOutMultiTrack1->isChecked() ? (1 << 0) : 0) |
+		     (ui->advOutMultiTrack2->isChecked() ? (1 << 1) : 0) |
+		     (ui->advOutMultiTrack3->isChecked() ? (1 << 2) : 0) |
+		     (ui->advOutMultiTrack4->isChecked() ? (1 << 3) : 0) |
+		     (ui->advOutMultiTrack5->isChecked() ? (1 << 4) : 0) |
+		     (ui->advOutMultiTrack6->isChecked() ? (1 << 5) : 0);
 	return tracks;
 }
 

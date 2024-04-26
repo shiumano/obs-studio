@@ -179,7 +179,6 @@ static bool obs_init_gpu_conversion(struct obs_core_video_mix *video)
 	video->convert_textures[0] = NULL;
 	video->convert_textures[1] = NULL;
 	video->convert_textures[2] = NULL;
-#ifdef _WIN32
 	video->convert_textures_encode[0] = NULL;
 	video->convert_textures_encode[1] = NULL;
 	video->convert_textures_encode[2] = NULL;
@@ -200,7 +199,6 @@ static bool obs_init_gpu_conversion(struct obs_core_video_mix *video)
 			return false;
 		}
 	}
-#endif
 
 	bool success = true;
 
@@ -297,13 +295,11 @@ static bool obs_init_gpu_conversion(struct obs_core_video_mix *video)
 				gs_texture_destroy(video->convert_textures[c]);
 				video->convert_textures[c] = NULL;
 			}
-#ifdef _WIN32
 			if (video->convert_textures_encode[c]) {
 				gs_texture_destroy(
 					video->convert_textures_encode[c]);
 				video->convert_textures_encode[c] = NULL;
 			}
-#endif
 		}
 	}
 
@@ -750,6 +746,8 @@ static int obs_init_video(struct obs_video_info *ovi)
 
 	if (pthread_mutex_init(&video->task_mutex, NULL) < 0)
 		return OBS_VIDEO_FAIL;
+	if (pthread_mutex_init(&video->encoder_group_mutex, NULL) < 0)
+		return OBS_VIDEO_FAIL;
 	if (pthread_mutex_init(&video->mixes_mutex, NULL) < 0)
 		return OBS_VIDEO_FAIL;
 
@@ -830,12 +828,10 @@ static void obs_free_render_textures(struct obs_core_video_mix *video)
 			gs_texture_destroy(video->convert_textures[c]);
 			video->convert_textures[c] = NULL;
 		}
-#ifdef _WIN32
 		if (video->convert_textures_encode[c]) {
 			gs_texture_destroy(video->convert_textures_encode[c]);
 			video->convert_textures_encode[c] = NULL;
 		}
-#endif
 	}
 
 	gs_texture_destroy(video->output_texture);
@@ -853,8 +849,8 @@ void obs_free_video_mix(struct obs_core_video_mix *video)
 
 		obs_free_render_textures(video);
 
-		circlebuf_free(&video->vframe_info_buffer);
-		circlebuf_free(&video->vframe_info_buffer_gpu);
+		deque_free(&video->vframe_info_buffer);
+		deque_free(&video->vframe_info_buffer_gpu);
 
 		video->texture_rendered = false;
 		memset(video->textures_copied, 0,
@@ -890,9 +886,18 @@ static void obs_free_video(void)
 	pthread_mutex_init_value(&obs->video.mixes_mutex);
 	da_free(obs->video.mixes);
 
+	for (size_t i = 0; i < obs->video.ready_encoder_groups.num; i++) {
+		obs_weak_encoder_release(
+			obs->video.ready_encoder_groups.array[i]);
+	}
+	da_free(obs->video.ready_encoder_groups);
+
+	pthread_mutex_destroy(&obs->video.encoder_group_mutex);
+	pthread_mutex_init_value(&obs->video.encoder_group_mutex);
+
 	pthread_mutex_destroy(&obs->video.task_mutex);
 	pthread_mutex_init_value(&obs->video.task_mutex);
-	circlebuf_free(&obs->video.tasks);
+	deque_free(&obs->video.tasks);
 }
 
 static void obs_free_graphics(void)
@@ -940,7 +945,7 @@ static bool obs_init_audio(struct audio_output_info *ai)
 		return false;
 
 	struct obs_task_info audio_init = {.task = set_audio_thread};
-	circlebuf_push_back(&audio->tasks, &audio_init, sizeof(audio_init));
+	deque_push_back(&audio->tasks, &audio_init, sizeof(audio_init));
 
 	audio->monitoring_device_name = bstrdup("Default");
 	audio->monitoring_device_id = bstrdup("default");
@@ -972,14 +977,14 @@ static void obs_free_audio(void)
 	if (audio->audio)
 		audio_output_close(audio->audio);
 
-	circlebuf_free(&audio->buffered_timestamps);
+	deque_free(&audio->buffered_timestamps);
 	da_free(audio->render_order);
 	da_free(audio->root_nodes);
 
 	da_free(audio->monitors);
 	bfree(audio->monitoring_device_name);
 	bfree(audio->monitoring_device_id);
-	circlebuf_free(&audio->tasks);
+	deque_free(&audio->tasks);
 	pthread_mutex_destroy(&audio->task_mutex);
 	pthread_mutex_destroy(&audio->monitoring_mutex);
 
@@ -1242,6 +1247,7 @@ static bool obs_init(const char *locale, const char *module_config_path,
 	pthread_mutex_init_value(&obs->audio.monitoring_mutex);
 	pthread_mutex_init_value(&obs->audio.task_mutex);
 	pthread_mutex_init_value(&obs->video.task_mutex);
+	pthread_mutex_init_value(&obs->video.encoder_group_mutex);
 	pthread_mutex_init_value(&obs->video.mixes_mutex);
 
 	obs->name_store_owned = !store;
@@ -3353,7 +3359,7 @@ void obs_queue_task(enum obs_task_type type, obs_task_t task, void *param,
 			struct obs_task_info info = {task, param};
 
 			pthread_mutex_lock(&video->task_mutex);
-			circlebuf_push_back(&video->tasks, &info, sizeof(info));
+			deque_push_back(&video->tasks, &info, sizeof(info));
 			pthread_mutex_unlock(&video->task_mutex);
 
 		} else if (type == OBS_TASK_AUDIO) {
@@ -3361,7 +3367,7 @@ void obs_queue_task(enum obs_task_type type, obs_task_t task, void *param,
 			struct obs_task_info info = {task, param};
 
 			pthread_mutex_lock(&audio->task_mutex);
-			circlebuf_push_back(&audio->tasks, &info, sizeof(info));
+			deque_push_back(&audio->tasks, &info, sizeof(info));
 			pthread_mutex_unlock(&audio->task_mutex);
 
 		} else if (type == OBS_TASK_DESTROY) {

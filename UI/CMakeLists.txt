@@ -48,7 +48,6 @@ endif()
 include(cmake/feature-twitch.cmake)
 include(cmake/feature-restream.cmake)
 include(cmake/feature-youtube.cmake)
-include(cmake/feature-sparkle.cmake)
 include(cmake/feature-whatsnew.cmake)
 
 add_subdirectory(frontend-plugins)
@@ -72,6 +71,8 @@ target_sources(
           multiview.hpp
           obf.c
           obf.h
+          obs-app-theming.cpp
+          obs-app-theming.hpp
           obs-app.cpp
           obs-app.hpp
           obs-proxy-style.cpp
@@ -79,8 +80,6 @@ target_sources(
           platform.hpp
           qt-display.cpp
           qt-display.hpp
-          qt-wrappers.cpp
-          qt-wrappers.hpp
           ui-config.h
           ui-validation.cpp
           ui-validation.hpp)
@@ -91,7 +90,7 @@ elseif(OS_MACOS)
   include(cmake/os-macos.cmake)
 elseif(OS_LINUX)
   include(cmake/os-linux.cmake)
-elseif(OS_FREEBSD)
+elseif(OS_FREEBSD OR OS_OPENBSD)
   include(cmake/os-freebsd.cmake)
 endif()
 

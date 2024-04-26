@@ -250,7 +250,7 @@ static inline void clear_raw_audio_buffers(obs_output_t *output)
 {
 	for (size_t i = 0; i < MAX_AUDIO_MIXES; i++) {
 		for (size_t j = 0; j < MAX_AV_PLANES; j++) {
-			circlebuf_free(&output->audio_buffer[i][j]);
+			deque_free(&output->audio_buffer[i][j]);
 		}
 	}
 }
@@ -290,6 +290,8 @@ void obs_output_destroy(obs_output_t *output)
 			}
 		}
 
+		da_free(output->keyframe_group_tracking);
+
 		clear_raw_audio_buffers(output);
 
 		os_event_destroy(output->stopping_event);
@@ -299,8 +301,8 @@ void obs_output_destroy(obs_output_t *output)
 		pthread_mutex_destroy(&output->delay_mutex);
 		os_event_destroy(output->reconnect_stop_event);
 		obs_context_data_free(&output->context);
-		circlebuf_free(&output->delay_data);
-		circlebuf_free(&output->caption_data);
+		deque_free(&output->delay_data);
+		deque_free(&output->caption_data);
 		if (output->owns_info_id)
 			bfree((void *)output->info.id);
 		if (output->last_error_message)
@@ -340,8 +342,8 @@ bool obs_output_actual_start(obs_output_t *output)
 
 	output->caption_timestamp = 0;
 
-	circlebuf_free(&output->caption_data);
-	circlebuf_init(&output->caption_data);
+	deque_free(&output->caption_data);
+	deque_init(&output->caption_data);
 
 	return success;
 }
@@ -475,6 +477,8 @@ void obs_output_actual_stop(obs_output_t *output, bool force, uint64_t ts)
 		bfree(output->caption_head);
 		output->caption_head = output->caption_tail;
 	}
+
+	da_clear(output->keyframe_group_tracking);
 }
 
 void obs_output_stop(obs_output_t *output)
@@ -1491,8 +1495,8 @@ static bool add_caption(struct obs_output *output, struct encoder_packet *out)
 		void *caption_buf = bzalloc(3 * sizeof(uint8_t));
 
 		while (output->caption_data.size > 0) {
-			circlebuf_pop_front(&output->caption_data, caption_buf,
-					    3 * sizeof(uint8_t));
+			deque_pop_front(&output->caption_data, caption_buf,
+					3 * sizeof(uint8_t));
 
 			if ((((uint8_t *)caption_buf)[0] & 0x3) != 0) {
 				// only send cea 608
@@ -1915,11 +1919,6 @@ static bool initialize_interleaved_packets(struct obs_output *output)
 	/* subtract offsets from highest TS offset variables */
 	output->highest_audio_ts -= audio[first_audio_idx]->dts_usec;
 
-	for (size_t i = 0; i < MAX_OUTPUT_VIDEO_ENCODERS; i++) {
-		if (video[i])
-			output->highest_video_ts[i] -= video[i]->dts_usec;
-	}
-
 	/* apply new offsets to all existing packet DTS/PTS values */
 	for (size_t i = 0; i < output->interleaved_packets.num; i++) {
 		struct encoder_packet *packet =
@@ -1966,8 +1965,11 @@ static void resort_interleaved_packets(struct obs_output *output)
 	memset(&output->interleaved_packets, 0,
 	       sizeof(output->interleaved_packets));
 
-	for (size_t i = 0; i < old_array.num; i++)
+	for (size_t i = 0; i < old_array.num; i++) {
+		set_higher_ts(output, &old_array.array[i]);
+
 		insert_interleaved_packet(output, &old_array.array[i]);
+	}
 
 	da_free(old_array);
 }
@@ -1987,6 +1989,85 @@ static void discard_unused_audio_packets(struct obs_output *output,
 
 	if (idx)
 		discard_to_idx(output, idx);
+}
+
+static bool purge_encoder_group_keyframe_data(obs_output_t *output, size_t idx)
+{
+	struct keyframe_group_data *data =
+		&output->keyframe_group_tracking.array[idx];
+	uint32_t modified_count = 0;
+	for (size_t i = 0; i < MAX_OUTPUT_VIDEO_ENCODERS; i++) {
+		if (data->seen_on_track[i] != KEYFRAME_TRACK_STATUS_NOT_SEEN)
+			modified_count += 1;
+	}
+
+	if (modified_count == data->required_tracks) {
+		da_erase(output->keyframe_group_tracking, idx);
+		return true;
+	}
+	return false;
+}
+
+/* Check whether keyframes are emitted from all grouped encoders, and log
+ * if keyframes haven't been emitted from all grouped encoders. */
+static void
+check_encoder_group_keyframe_alignment(obs_output_t *output,
+				       struct encoder_packet *packet)
+{
+	size_t idx = 0;
+	struct keyframe_group_data insert_data = {0};
+
+	if (!packet->keyframe || packet->type != OBS_ENCODER_VIDEO ||
+	    !packet->encoder->encoder_group)
+		return;
+
+	for (; idx < output->keyframe_group_tracking.num;) {
+		struct keyframe_group_data *data =
+			&output->keyframe_group_tracking.array[idx];
+		if (data->pts > packet->pts)
+			break;
+		if (data->group_id !=
+		    (uintptr_t)packet->encoder->encoder_group) {
+			idx += 1;
+			continue;
+		}
+
+		if (data->pts < packet->pts) {
+			if (data->seen_on_track[packet->track_idx] ==
+			    KEYFRAME_TRACK_STATUS_NOT_SEEN) {
+				blog(LOG_WARNING,
+				     "obs-output '%s': Missing keyframe with pts %" PRIi64
+				     " for encoder '%s' (track: %zu)",
+				     obs_output_get_name(output), data->pts,
+				     obs_encoder_get_name(packet->encoder),
+				     packet->track_idx);
+			}
+
+			data->seen_on_track[packet->track_idx] =
+				KEYFRAME_TRACK_STATUS_SKIPPED;
+
+			if (!purge_encoder_group_keyframe_data(output, idx))
+				idx += 1;
+			continue;
+		}
+
+		data->seen_on_track[packet->track_idx] =
+			KEYFRAME_TRACK_STATUS_SEEN;
+		purge_encoder_group_keyframe_data(output, idx);
+		return;
+	}
+
+	insert_data.group_id = (uintptr_t)packet->encoder->encoder_group;
+	insert_data.pts = packet->pts;
+	insert_data.seen_on_track[packet->track_idx] =
+		KEYFRAME_TRACK_STATUS_SEEN;
+
+	pthread_mutex_lock(&packet->encoder->encoder_group->mutex);
+	insert_data.required_tracks =
+		packet->encoder->encoder_group->encoders_started;
+	pthread_mutex_unlock(&packet->encoder->encoder_group->mutex);
+
+	da_insert(output->keyframe_group_tracking, idx, &insert_data);
 }
 
 static void interleave_packets(void *data, struct encoder_packet *packet)
@@ -2021,6 +2102,8 @@ static void interleave_packets(void *data, struct encoder_packet *packet)
 					 output->received_video[i];
 	}
 
+	check_encoder_group_keyframe_alignment(output, packet);
+
 	was_started = output->received_audio && received_video;
 
 	if (output->active_delay_ns)
@@ -2034,7 +2117,6 @@ static void interleave_packets(void *data, struct encoder_packet *packet)
 		check_received(output, packet);
 
 	insert_interleaved_packet(output, &out);
-	set_higher_ts(output, &out);
 
 	received_video = true;
 	for (size_t i = 0; i < MAX_OUTPUT_VIDEO_ENCODERS; i++) {
@@ -2054,6 +2136,8 @@ static void interleave_packets(void *data, struct encoder_packet *packet)
 				}
 			}
 		} else {
+			set_higher_ts(output, &out);
+
 			send_interleaved(output);
 		}
 	}
@@ -2093,6 +2177,11 @@ static void default_raw_video_callback(void *param, struct video_data *frame)
 static bool prepare_audio(struct obs_output *output,
 			  const struct audio_data *old, struct audio_data *new)
 {
+	if ((output->info.flags & OBS_OUTPUT_VIDEO) == 0) {
+		*new = *old;
+		return true;
+	}
+
 	if (!output->video_start_ts) {
 		pthread_mutex_lock(&output->pause.mutex);
 		output->video_start_ts = output->pause.last_video_ts;
@@ -2152,17 +2241,16 @@ static void default_raw_audio_callback(void *param, size_t mix_idx,
 	frame_size_bytes = AUDIO_OUTPUT_FRAMES * output->audio_size;
 
 	for (size_t i = 0; i < output->planes; i++)
-		circlebuf_push_back(&output->audio_buffer[mix_idx][i],
-				    out.data[i],
-				    out.frames * output->audio_size);
+		deque_push_back(&output->audio_buffer[mix_idx][i], out.data[i],
+				out.frames * output->audio_size);
 
 	/* -------------- */
 
 	while (output->audio_buffer[mix_idx][0].size > frame_size_bytes) {
 		for (size_t i = 0; i < output->planes; i++) {
-			circlebuf_pop_front(&output->audio_buffer[mix_idx][i],
-					    output->audio_data[i],
-					    frame_size_bytes);
+			deque_pop_front(&output->audio_buffer[mix_idx][i],
+					output->audio_data[i],
+					frame_size_bytes);
 			out.data[i] = (uint8_t *)output->audio_data[i];
 		}
 
@@ -2233,7 +2321,7 @@ static void reset_packet_data(obs_output_t *output)
 	for (size_t i = 0; i < MAX_OUTPUT_VIDEO_ENCODERS; i++) {
 		output->received_video[i] = false;
 		output->video_offsets[i] = 0;
-		output->highest_video_ts[i] = 0;
+		output->highest_video_ts[i] = INT64_MIN;
 	}
 	for (size_t i = 0; i < MAX_OUTPUT_AUDIO_ENCODERS; i++)
 		output->audio_offsets[i] = 0;
@@ -2851,9 +2939,8 @@ void obs_output_caption(obs_output_t *output,
 {
 	pthread_mutex_lock(&output->caption_mutex);
 	for (size_t i = 0; i < captions->packets; i++) {
-		circlebuf_push_back(&output->caption_data,
-				    captions->data + (i * 3),
-				    3 * sizeof(uint8_t));
+		deque_push_back(&output->caption_data, captions->data + (i * 3),
+				3 * sizeof(uint8_t));
 	}
 	pthread_mutex_unlock(&output->caption_mutex);
 }

@@ -1088,7 +1088,7 @@ void OBSBasic::HideTransitionProperties()
 }
 
 void OBSBasic::PasteShowHideTransition(obs_sceneitem_t *item, bool show,
-				       obs_source_t *tr)
+				       obs_source_t *tr, int duration)
 {
 	int64_t sceneItemId = obs_sceneitem_get_id(item);
 	std::string sceneUUID = obs_source_get_uuid(
@@ -1114,6 +1114,7 @@ void OBSBasic::PasteShowHideTransition(obs_sceneitem_t *item, bool show,
 	OBSSourceAutoRelease dup =
 		obs_source_duplicate(tr, obs_source_get_name(tr), true);
 	obs_sceneitem_set_transition(item, show, dup);
+	obs_sceneitem_set_transition_duration(item, show, duration);
 
 	OBSDataAutoRelease transitionData =
 		obs_sceneitem_transition_save(item, show);
@@ -1183,6 +1184,8 @@ QMenu *OBSBasic::CreateVisibilityTransitionMenu(bool visible)
 		if (id.isNull() || id.isEmpty()) {
 			obs_sceneitem_set_transition(sceneItem, visible,
 						     nullptr);
+			obs_sceneitem_set_transition_duration(sceneItem,
+							      visible, 0);
 		} else {
 			OBSSource tr = obs_sceneitem_get_transition(sceneItem,
 								    visible);
@@ -1273,7 +1276,10 @@ QMenu *OBSBasic::CreateVisibilityTransitionMenu(bool visible)
 			reinterpret_cast<OBSBasic *>(App()->GetMainWindow());
 		OBSSceneItem item = main->GetCurrentSceneItem();
 		obs_source_t *tr = obs_sceneitem_get_transition(item, visible);
+		int trDur =
+			obs_sceneitem_get_transition_duration(item, visible);
 		main->copySourceTransition = obs_source_get_weak_source(tr);
+		main->copySourceTransitionDuration = trDur;
 	};
 	menu->addSeparator();
 	action = menu->addAction(QT_UTF8(Str("Copy")));
@@ -1285,6 +1291,7 @@ QMenu *OBSBasic::CreateVisibilityTransitionMenu(bool visible)
 		OBSBasic *main =
 			reinterpret_cast<OBSBasic *>(App()->GetMainWindow());
 		OBSSource tr = OBSGetStrongRef(main->copySourceTransition);
+		int trDuration = main->copySourceTransitionDuration;
 		if (!tr)
 			return;
 
@@ -1294,7 +1301,7 @@ QMenu *OBSBasic::CreateVisibilityTransitionMenu(bool visible)
 			if (!item)
 				continue;
 
-			PasteShowHideTransition(item, show, tr);
+			PasteShowHideTransition(item, show, tr, trDuration);
 		}
 	};
 
@@ -1779,6 +1786,10 @@ obs_data_array_t *OBSBasic::SaveTransitions()
 		obs_data_array_push_back(transitions, sourceData);
 	}
 
+	for (const OBSDataAutoRelease &transition : safeModeTransitions) {
+		obs_data_array_push_back(transitions, transition);
+	}
+
 	return transitions;
 }
 
@@ -1787,6 +1798,7 @@ void OBSBasic::LoadTransitions(obs_data_array_t *transitions,
 {
 	size_t count = obs_data_array_count(transitions);
 
+	safeModeTransitions.clear();
 	for (size_t i = 0; i < count; i++) {
 		OBSDataAutoRelease item = obs_data_array_item(transitions, i);
 		const char *name = obs_data_get_string(item, "name");
@@ -1806,6 +1818,8 @@ void OBSBasic::LoadTransitions(obs_data_array_t *transitions,
 				ui->transitions->count() - 1);
 			if (cb)
 				cb(private_data, source);
+		} else if (safe_mode || disable_3p_plugins) {
+			safeModeTransitions.push_back(std::move(item));
 		}
 	}
 }

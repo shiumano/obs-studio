@@ -239,7 +239,7 @@ void mp_decode_clear_packets(struct mp_decode *d)
 
 	while (d->packets.size) {
 		AVPacket *pkt;
-		circlebuf_pop_front(&d->packets, &pkt, sizeof(pkt));
+		deque_pop_front(&d->packets, &pkt, sizeof(pkt));
 		mp_media_free_packet(d->m, pkt);
 	}
 }
@@ -247,7 +247,7 @@ void mp_decode_clear_packets(struct mp_decode *d)
 void mp_decode_free(struct mp_decode *d)
 {
 	mp_decode_clear_packets(d);
-	circlebuf_free(&d->packets);
+	deque_free(&d->packets);
 
 	av_packet_free(&d->pkt);
 	av_packet_free(&d->orig_pkt);
@@ -274,7 +274,7 @@ void mp_decode_free(struct mp_decode *d)
 
 void mp_decode_push_packet(struct mp_decode *decode, AVPacket *packet)
 {
-	circlebuf_push_back(&decode->packets, &packet, sizeof(packet));
+	deque_push_back(&decode->packets, &packet, sizeof(packet));
 }
 
 static inline int64_t get_estimated_duration(struct mp_decode *d,
@@ -337,16 +337,24 @@ static int decode_packet(struct mp_decode *d, int *got_frame)
 			return ret;
 		}
 
+		/* does not check for color format or other parameter changes which would require frame buffer realloc */
+		if (d->sw_frame->data[0] &&
+		    (d->sw_frame->width != d->hw_frame->width ||
+		     d->sw_frame->height != d->hw_frame->height)) {
+			blog(LOG_DEBUG,
+			     "MP: hardware frame size changed from %dx%d to %dx%d. reallocating frame",
+			     d->sw_frame->width, d->sw_frame->height,
+			     d->hw_frame->width, d->hw_frame->height);
+			av_frame_unref(d->sw_frame);
+		}
+
 		int err = av_hwframe_transfer_data(d->sw_frame, d->hw_frame, 0);
+		if (err == 0) {
+			err = av_frame_copy_props(d->sw_frame, d->hw_frame);
+		}
 		if (err) {
 			ret = 0;
 			*got_frame = false;
-		} else {
-			d->sw_frame->color_range = d->hw_frame->color_range;
-			d->sw_frame->color_primaries =
-				d->hw_frame->color_primaries;
-			d->sw_frame->color_trc = d->hw_frame->color_trc;
-			d->sw_frame->colorspace = d->hw_frame->colorspace;
 		}
 	}
 
@@ -376,8 +384,8 @@ bool mp_decode_next(struct mp_decode *d)
 				}
 			} else {
 				mp_media_free_packet(d->m, d->orig_pkt);
-				circlebuf_pop_front(&d->packets, &d->orig_pkt,
-						    sizeof(d->orig_pkt));
+				deque_pop_front(&d->packets, &d->orig_pkt,
+						sizeof(d->orig_pkt));
 				av_packet_ref(d->pkt, d->orig_pkt);
 				d->packet_pending = true;
 			}
